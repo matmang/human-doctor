@@ -32,13 +32,27 @@ if not os.path.exists(".cache/files"):
     os.mkdir(".cache/files")
 
 RAG_PROMPT_TEMPLATE = """
-당신은 질문에 친절하게 답변하는 AI 입니다. 검색된 다음 문맥을 활용하여 질문에 답하세요. 답을 모른다면, 모른다고 답변하세요.
-Question: {question}
-Context: {context}
+From now on, as a doctor, you must identify symptoms and provide answers through Q&A with patients. 
+Before answering, please express the diagnosis progress for the disease you estimate as a percentage at the top, and complete the diagnosis when it reaches 100%. 
+Proceed with the diagnosis with confidence in your answers, and continue to ask questions and obtain information about the patient's symptoms until the diagnosis progress reaches 100%. 
+First, start with a diagnosis progress of 0%. 
+Ask one question at a time. 
+Do not expect Human's answer in your turn. 
+Do not repeat your answer.
+그리고, 반드시  한국어로 답하세요.
+
+Question:
+{question}
+
+Context:
+{context}
+
+Diagnosis pregress:
+
 Answer:"""
 
-st.set_page_config(page_title="OLLAMA Local 모델 테스트", page_icon="💬")
-st.title("OLLAMA Local 모델 테스트")
+st.set_page_config(page_title="Human Docter 팀 최종 과제", page_icon="💬")
+st.title("Team Human Docter")
 
 if "messages" not in st.session_state:
     st.session_state["messages"] = [
@@ -57,13 +71,10 @@ def format_docs(docs):
     return "\n\n".join(doc.page_content for doc in docs)
 
 @st.cache_resource(show_spinner="Embedding file...")
-def embed_file(file):
-    file_content = file.read()
-    file_path = f"./.cache/files{file.name}"
-    with open(file_path, "wb") as f:
-        f.write(file_content)
+def embed_file():
+    file_path = f"./.cache/files/naver_medical.pdf"
 
-    cache_dir = LocalFileStore(f"./.cache/embeddings/{file.name}")
+    cache_dir = LocalFileStore(f"./.cache/embeddings/naver_medical.pdf")
 
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=500,
@@ -89,7 +100,7 @@ def embed_file(file):
         embeddings = OpenAIEmbeddings()
     cached_embeddings = CacheBackedEmbeddings.from_bytes_store(embeddings, cache_dir)
     vectorstore = FAISS.from_documents(docs, embedding=cached_embeddings)
-    retriever = vectorstore.as_retriever()
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 1, 'fetch_k': 50, 'lambda_mult': 0.5}, search_type='mmr')
     return retriever
 
 with st.sidebar:
@@ -98,8 +109,7 @@ with st.sidebar:
         type=["pdf", "txt", "docx"],
     )
 
-if file:
-    retriever = embed_file(file)
+retriever = embed_file()
 
 print_history()
 
@@ -109,35 +119,19 @@ if user_input := st.chat_input():
     with st.chat_message("assistant"):
         ollama = RemoteRunnable(LANGSERVE_ENDPOINT)
         chat_container = st.empty()
-        if file is not None:
-            prompt = ChatPromptTemplate.from_template(RAG_PROMPT_TEMPLATE)
-
-            rag_chain = (
-                {
-                    "context": retriever | format_docs,
-                    "question": RunnablePassthrough(),
-                }
-                | prompt
-                | ollama
-                | StrOutputParser()
-            )
-            answer = rag_chain.stream(user_input)
-            chunks = []
-            for chunk in answer:
-                chunks.append(chunk)
-                chat_container.markdown("".join(chunks))
-            add_history("ai", "".join(chunks))
-        else:
-            prompt = ChatPromptTemplate.from_template(
-                "다음의 질문에 간결하게 답변해 주세요:\n{input}"
-            )
-
-            chain = prompt | ollama | StrOutputParser()
-
-            answer = chain.stream(user_input)
-
-            chunks = []
-            for chunk in answer:
-                chunks.append(chunk)
-                chat_container.markdown("".join(chunks))
-            add_history("ai", "".join(chunks))
+        prompt = ChatPromptTemplate.from_template(RAG_PROMPT_TEMPLATE)
+        rag_chain = (
+            {
+                "context": retriever | format_docs,
+                "question": RunnablePassthrough(),
+            }
+            | prompt
+            | ollama.bind(stop=["Human:", "사용자:", "질문:"])
+            | StrOutputParser()
+        )
+        answer = rag_chain.stream(user_input)
+        chunks = []
+        for chunk in answer:
+            chunks.append(chunk)
+            chat_container.markdown("".join(chunks))
+        add_history("ai", "".join(chunks))
